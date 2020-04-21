@@ -1,0 +1,167 @@
+#!/usr/bin/python3
+
+import time
+import os
+import json
+import requests
+import RPi.GPIO as GPIO
+
+DELAY = 5
+
+TIMEOUT = 1
+BRAVIA_IP = 'tv'
+BRAVIA_PIN = '0000'
+BRAVIA_ID = 'id'
+BRAVIA_NICKNAME = 'nickname'
+
+class BraviaRC(object):
+
+    def __init__(self, host, psk=None, mac=None):
+        self._host = host
+        self._mac = mac
+        self._psk = psk
+        self._cookies = None
+        self._commands = []
+        self._content_mapping = []
+        self._app_list = {}
+
+    def _jdata_build(self, method, params=None):
+        if params:
+            ret = json.dumps({"method": method,
+                              "params": [params],
+                              "id": 1,
+                              "version": "1.0"})
+        else:
+            ret = json.dumps({"method": method,
+                              "params": [],
+                              "id": 1,
+                              "version": "1.0"})
+        return ret
+
+    def connect(self, pin, clientid, nickname):
+        authorization = json.dumps(
+            {"method": "actRegister",
+             "params": [{"clientid": clientid,
+                         "nickname": nickname,
+                         "level": "private"},
+                        [{"value": "yes",
+                          "function": "WOL"}]],
+             "id": 1,
+             "version": "1.0"}
+        ).encode('utf-8')
+
+        headers = {'Connection': 'keep-alive'}
+
+        auth = None
+
+        if pin:
+            auth = ('', pin)
+
+        url = 'http://%s/sony/accessControl' % self._host
+
+        try:
+            response = requests.post(url, data=authorization, headers=headers,
+                                     timeout=TIMEOUT, auth=auth)
+            response.raise_for_status()
+
+        except requests.exceptions.HTTPError as exception_instance:
+            return False
+
+        except requests.exceptions.Timeout as exception_instance:
+            return False
+
+        except Exception as exception_instance:  # pylint: disable=broad-except
+            return False
+
+        else:
+            resp = response.json()
+            if resp is None or not resp.get('error'):
+                self._cookies = response.cookies
+                return True
+
+        return False
+
+    def is_connected(self):
+        if self._cookies is None:
+            return False
+        else:
+            return True
+
+    def bravia_req_json(self, url, params, log_errors=True):
+        """ Send request command via HTTP json to Sony Bravia."""
+
+        headers = {}
+
+        if self._psk is not None:
+            headers['X-Auth-PSK'] = self._psk
+
+        built_url = 'http://{}/{}'.format(self._host, url)
+
+        try:
+            response = requests.post(built_url,
+                                     data=params.encode("UTF-8"),
+                                     cookies=self._cookies,
+                                     timeout=TIMEOUT,
+                                     headers=headers)
+
+        except:
+            passy
+        
+        else:
+            html = json.loads(response.content.decode('utf-8'))
+            return html
+
+    def get_power_status(self):
+        """Get power status: off, active, standby.
+           By default the TV is turned off."""
+
+        return_value = 'off'
+        try:
+            resp = self.bravia_req_json("sony/system",
+                                        self._jdata_build("getPowerStatus"),
+                                        False)
+            if resp is not None and not resp.get('error'):
+                power_data = resp.get('result')[0]
+                return_value = power_data.get('status')
+        except:  # pylint: disable=broad-except
+            pass
+        return return_value
+
+
+GPIO.setwarnings(False)
+GPIO.setmode(GPIO.BCM)
+GPIO.setup(21, GPIO.OUT)
+GPIO.output(21, GPIO.LOW)
+
+braviarc = BraviaRC(BRAVIA_IP)
+braviarc.connect(BRAVIA_PIN, BRAVIA_ID, BRAVIA_NICKNAME)
+
+status = False
+status_tmp = status
+
+while True:
+    if braviarc.is_connected():
+        print("connected")
+        if braviarc.get_power_status() == "active":
+            print("active")
+            status = True
+        else:
+            print("inactive")
+            status = False
+
+        if status_tmp != status:
+            status_tmp = status
+            if status:
+                print("ambilight on")
+                GPIO.output(21, GPIO.HIGH)
+                time.sleep(1)
+                os.system("cp /etc/hyperion/hyperion.config.json.cal_on /etc/hyperion/hyperion.config.json")
+                os.system("sudo systemctl start hyperion")
+            else:
+                print("ambilight off")
+                GPIO.output(21, GPIO.LOW)
+                os.system("sudo systemctl stop hyperion")
+    else:
+        print("tv off")
+
+    time.sleep(DELAY)
